@@ -1,0 +1,12 @@
+patient_label,registered_at_utc,age,sex,height_cm,weight_kg,bmi,metabolic_group,diabetes_duration_years,diabetes_medication,insulin_use,smoking_status,cgm_device_type,cgm_own_device,apple_watch,first_name,surname,blood_type,last_meal_time,last_meal_description,operator_notes
+GY_01,2026-03-26T15:42:23.532500+00:00,23,male,180,100.0,30.9,normoglycemic,,,,former,medtronic,True,False,,,,,,
+GY_02,2026-03-26T15:44:07.563793+00:00,50,male,150,150.0,66.7,T2DM,3,,injections,never,libre,True,False,,,,,,
+T1_01,2026-03-26T15:54:33.350865+00:00,50,male,180,125.0,38.6,T1DM,1,,injections,current,libre,False,True,Matan,Orr,B+,,toast + coffee,handsome
+T1_02,2026-03-26T16:57:27.370156+00:00,27,male,178,67.0,21.1,T1DM,3,,injections,never,libre,True,True,,,,,,
+T1_03,2026-03-26T16:59:04.455446+00:00,24,male,120,45.0,31.2,T1DM,3,,injections,never,libre,True,True,,,,,,
+T1_04,2026-03-30T10:42:48.752159+00:00,20,male,180,70.0,21.6,T1DM,4,,injections,former,medtronic,True,True,,,,,,
+NG_01,2026-03-30T10:46:19.540781+00:00,50,male,180,80.0,24.7,normoglycemic,,,,former,medtronic,True,True,,,,,,
+T1_05,2026-03-30T11:05:08.764327+00:00,45,male,180,80.0,24.7,T1DM,3,,injections,former,medtronic,True,True,Matan,Orr,,,,
+NG_02,2026-03-31T11:08:31.315157+00:00,37,male,185,85.0,24.8,normoglycemic,,,,never,libre,True,True,Gideon,,,,,
+T1_06,2026-04-01T08:24:03.074316+00:00,25,male,180,80.0,24.7,T1DM,5,Humalog,pump,former,libre,True,True,,,,,,
+T1_07,2026-04-01T09:41:30.864477+00:00,28,male,180,70.0,21.6,T1DM,4,Humalog,pump,current,dexcom,True,True,Nadav,Stern,AB+,2026-04-01T12:33,crossiant,
