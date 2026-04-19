@@ -18,12 +18,21 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Query
+from typing import Callable
+
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from models import PatientRegistrationRequest, PatientRegistrationResponse, PatientRecord
+from models import (
+    PatientRecord,
+    PatientRegistrationRequest,
+    PatientRegistrationResponse,
+    PatientUpdateRequest,
+)
+import audit
 import csv_store
 import gcs_client
+from auth import AdminContext, require_admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -209,6 +218,99 @@ def register_patient(req: PatientRegistrationRequest):
     return PatientRegistrationResponse(patient_label=label, warnings=warnings)
 
 
+def _mutate_with_occ(mutate: Callable[[list[PatientRecord]], PatientRecord]) -> PatientRecord:
+    """Run `mutate` on the current record list, persist locally + to GCS, retry on conflict.
+
+    Uses snapshot-based rollback (vs. the append-only row rollback used by
+    registration) so edits and deletes — which rewrite the file — can be
+    undone if the GCS upload fails. Upholds the same invariant: no local
+    write survives without a matching remote write.
+
+    `mutate(records)` must modify `records` in place and return the affected
+    PatientRecord. Raises HTTPException(503) on unrecoverable GCS failure.
+    """
+    try:
+        from google.api_core.exceptions import PreconditionFailed
+    except ImportError:
+        PreconditionFailed = ()  # type: ignore[assignment]
+
+    last_error: Exception | None = None
+
+    for attempt in range(_MAX_CSV_UPLOAD_RETRIES):
+        with csv_store._lock:
+            try:
+                generation = gcs_client.get_patients_csv_generation()
+            except Exception as e:
+                log.exception("GCS generation probe failed")
+                raise HTTPException(
+                    status_code=503, detail=gcs_client.friendly_error(e),
+                ) from e
+
+            snapshot = csv_store.snapshot()
+            records = csv_store.read_all()
+            try:
+                affected = mutate(records)
+            except HTTPException:
+                raise
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from e
+
+            csv_store.rewrite_all(records)
+
+            try:
+                gcs_client.upload_patients_csv(
+                    csv_store.CSV_PATH, if_generation_match=generation
+                )
+                return affected
+            except PreconditionFailed as e:
+                last_error = e
+                csv_store.restore(snapshot)
+                log.info(
+                    "CSV upload conflict on mutate (attempt %d/%d), re-syncing",
+                    attempt + 1, _MAX_CSV_UPLOAD_RETRIES,
+                )
+                try:
+                    gcs_client.download_patients_csv(csv_store.CSV_PATH)
+                except Exception as sync_err:
+                    log.exception("Re-sync after OCC conflict failed")
+                    csv_store.restore(snapshot)
+                    raise HTTPException(
+                        status_code=503,
+                        detail=gcs_client.friendly_error(sync_err),
+                    ) from sync_err
+            except Exception as e:
+                log.exception("GCS patients.csv upload failed during mutation")
+                csv_store.restore(snapshot)
+                raise HTTPException(
+                    status_code=503, detail=gcs_client.friendly_error(e),
+                ) from e
+
+    log.error(
+        "CSV mutation upload exhausted %d retries, last error: %s",
+        _MAX_CSV_UPLOAD_RETRIES, last_error,
+    )
+    raise HTTPException(
+        status_code=503,
+        detail="Could not save to cloud storage after several attempts. Please retry.",
+    )
+
+
+def _post_mutation_mirror(record: PatientRecord, warnings: list[str]) -> None:
+    """Best-effort per-patient metadata + audit log GCS mirroring. Never raises."""
+    try:
+        gcs_client.upload_patient_metadata(record)
+    except Exception as e:
+        log.exception("GCS metadata.json upload failed for %s", record.patient_label)
+        warnings.append(
+            f"Patient saved, but metadata file did not sync: {gcs_client.friendly_error(e)}"
+        )
+    try:
+        audit.mirror_to_gcs()
+    except Exception as e:
+        log.exception("GCS audit_log.jsonl upload failed")
+        warnings.append(f"Audit log did not sync: {gcs_client.friendly_error(e)}")
+
+
 @app.get("/api/patients")
 def list_patients(metabolic_group: str | None = Query(None)):
     """Return a lightweight summary of every registered patient.
@@ -242,3 +344,148 @@ def get_patient(label: str):
     if not patient:
         raise HTTPException(status_code=404, detail=f"Patient {label} not found")
     return patient.model_dump()
+
+
+class AdminMutationResponse(PatientRegistrationResponse):
+    """Same shape as registration response — label + warnings."""
+    pass
+
+
+def _validate_diabetes_consistency(rec: PatientRecord) -> None:
+    """Re-enforce the diabetes-field conditional rules from PatientRegistrationRequest."""
+    diabetic = rec.metabolic_group in ("T1DM", "T2DM")
+    if diabetic:
+        missing = [
+            name for name, val in (
+                ("diabetes_duration_years", rec.diabetes_duration_years),
+                ("insulin_use", rec.insulin_use),
+            ) if val is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Required for {rec.metabolic_group}: {', '.join(missing)}"
+            )
+    else:
+        present = [
+            name for name, val in (
+                ("diabetes_duration_years", rec.diabetes_duration_years),
+                ("insulin_use", rec.insulin_use),
+            ) if val is not None
+        ]
+        if present:
+            raise ValueError(f"Must be empty for normoglycemic: {', '.join(present)}")
+
+
+@app.patch("/api/patients/{label}", response_model=AdminMutationResponse)
+def update_patient(
+    label: str,
+    patch: PatientUpdateRequest,
+    admin: AdminContext = Depends(require_admin),
+):
+    """Edit any field on an existing patient. Re-validates + recomputes BMI."""
+    patch_data = patch.model_dump(exclude_unset=True)
+    if not patch_data:
+        raise HTTPException(status_code=422, detail="No fields provided to update.")
+
+    before_dump: dict = {}
+
+    def mutate(records: list[PatientRecord]) -> PatientRecord:
+        nonlocal before_dump
+        idx = csv_store.find_index(records, label)
+        if idx < 0:
+            raise HTTPException(status_code=404, detail=f"Patient {label} not found")
+        current = records[idx]
+        before_dump = current.model_dump(mode="json")
+        merged = {**before_dump, **patch_data}
+        # Recompute BMI if height or weight moved.
+        if "height_cm" in patch_data or "weight_kg" in patch_data:
+            merged["bmi"] = round(
+                merged["weight_kg"] / (merged["height_cm"] / 100) ** 2, 1
+            )
+        # Guard against label collisions if caller renames.
+        new_label = merged["patient_label"]
+        if new_label != label:
+            for i, r in enumerate(records):
+                if i != idx and r.patient_label == new_label:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Label {new_label} is already in use.",
+                    )
+        updated = PatientRecord(**merged)
+        _validate_diabetes_consistency(updated)
+        records[idx] = updated
+        return updated
+
+    record = _mutate_with_occ(mutate)
+    after_dump = record.model_dump(mode="json")
+    audit.append_entry(
+        user=admin.user,
+        action="update",
+        label=record.patient_label,
+        diff=audit.compute_diff(before_dump, after_dump),
+    )
+
+    warnings: list[str] = []
+    if record.bmi < 15 or record.bmi > 50:
+        warnings.append(f"BMI {record.bmi} is outside the expected range (15–50)")
+    _post_mutation_mirror(record, warnings)
+    return AdminMutationResponse(patient_label=record.patient_label, warnings=warnings)
+
+
+@app.delete("/api/patients/{label}", response_model=AdminMutationResponse)
+def delete_patient(label: str, admin: AdminContext = Depends(require_admin)):
+    """Soft-delete: set deleted_at=now(). Row stays in the CSV (tombstone)."""
+    def mutate(records: list[PatientRecord]) -> PatientRecord:
+        idx = csv_store.find_index(records, label)
+        if idx < 0:
+            raise HTTPException(status_code=404, detail=f"Patient {label} not found")
+        current = records[idx]
+        if current.deleted_at is not None:
+            raise HTTPException(status_code=409, detail=f"Patient {label} is already deleted.")
+        current.deleted_at = datetime.now(timezone.utc)
+        records[idx] = current
+        return current
+
+    record = _mutate_with_occ(mutate)
+    audit.append_entry(
+        user=admin.user,
+        action="delete",
+        label=record.patient_label,
+        diff={"deleted_at": [None, record.deleted_at.isoformat()]},
+    )
+    warnings: list[str] = []
+    _post_mutation_mirror(record, warnings)
+    return AdminMutationResponse(patient_label=record.patient_label, warnings=warnings)
+
+
+@app.post("/api/patients", response_model=AdminMutationResponse)
+def add_patient_manual(
+    req: PatientRegistrationRequest,
+    admin: AdminContext = Depends(require_admin),
+):
+    """Manual add from the edit screen. Auto-generates a label like register."""
+    bmi = round(req.weight_kg / (req.height_cm / 100) ** 2, 1)
+    warnings: list[str] = []
+    if bmi < 15 or bmi > 50:
+        warnings.append(f"BMI {bmi} is outside the expected range (15–50)")
+
+    def mutate(records: list[PatientRecord]) -> PatientRecord:
+        label = csv_store.next_label(req.metabolic_group)
+        record = PatientRecord(
+            patient_label=label,
+            registered_at_utc=datetime.now(timezone.utc),
+            bmi=bmi,
+            **req.model_dump(),
+        )
+        records.append(record)
+        return record
+
+    record = _mutate_with_occ(mutate)
+    audit.append_entry(
+        user=admin.user,
+        action="create",
+        label=record.patient_label,
+        diff={"*": [None, record.model_dump(mode="json")]},
+    )
+    _post_mutation_mirror(record, warnings)
+    return AdminMutationResponse(patient_label=record.patient_label, warnings=warnings)
