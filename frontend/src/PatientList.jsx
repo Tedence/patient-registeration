@@ -6,16 +6,25 @@ export default function PatientList({ api }) {
   const [search, setSearch] = useState("");
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     setLoading(true);
+    setLoadError("");
     fetch(`${api}/api/patients`)
-      .then((r) => r.json())
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((data) => {
         setPatients(data);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((e) => {
+        console.error("patient list fetch failed", e);
+        setLoadError("Cannot load patients. Is the backend running?");
+        setLoading(false);
+      });
   }, [api]);
 
   const filtered = patients.filter((p) => {
@@ -26,8 +35,14 @@ export default function PatientList({ api }) {
   });
 
   async function showDetail(label) {
-    const res = await fetch(`${api}/api/patients/${label}`);
-    if (res.ok) setDetail(await res.json());
+    try {
+      const res = await fetch(`${api}/api/patients/${label}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setDetail(await res.json());
+    } catch (e) {
+      console.error("patient detail fetch failed", e);
+      setLoadError(`Could not load details for ${label}.`);
+    }
   }
 
   return (
@@ -50,6 +65,8 @@ export default function PatientList({ api }) {
 
         {loading ? (
           <p>Loading...</p>
+        ) : loadError ? (
+          <div className="block-error">{loadError}</div>
         ) : filtered.length === 0 ? (
           <p style={{ color: "#999", padding: 16 }}>No patients found.</p>
         ) : (

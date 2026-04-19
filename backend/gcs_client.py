@@ -39,6 +39,31 @@ _cached_bucket = None
 _cache_initialized = False
 
 
+def friendly_error(e: BaseException) -> str:
+    """Translate a raw GCS/network exception into one short operator-facing line.
+
+    Raw exceptions from google-cloud-storage embed URLs, JSON blobs, and
+    Python tracebacks — useful for server logs, intimidating for the
+    operator running the registration UI. This function maps the common
+    categories to short, actionable messages. The full exception should
+    still be logged separately for debugging.
+    """
+    name = type(e).__name__
+    text = str(e)
+
+    if name == "NotFound" or "bucket does not exist" in text or '"code": 404' in text:
+        return "Cloud storage bucket is missing. Contact admin."
+    if name == "Forbidden" or '"code": 403' in text or "does not have" in text:
+        return "No permission to write to cloud storage. Contact admin."
+    if name == "PreconditionFailed" or '"code": 412' in text:
+        return "Another operator is writing right now. Please retry."
+    if name in ("DefaultCredentialsError", "RefreshError") or "credentials" in text.lower():
+        return "Cloud storage credentials expired. Run `gcloud auth application-default login`."
+    if name in ("ConnectionError", "Timeout", "ServiceUnavailable") or "connection" in text.lower():
+        return "Cloud storage unreachable. Check your internet connection and retry."
+    return "Cloud storage write failed. Contact admin if this persists."
+
+
 def _enabled() -> bool:
     """Return True unless GCS_ENABLED is set to a falsy string.
 

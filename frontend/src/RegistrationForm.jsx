@@ -106,22 +106,52 @@ export default function RegistrationForm({ api }) {
 
   async function handleSubmit() {
     setSubmitError("");
+    let res;
     try {
-      const res = await fetch(`${api}/api/register`, {
+      res = await fetch(`${api}/api/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildPayload()),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || JSON.stringify(data));
-      }
-      const data = await res.json();
-      setResult(data);
-      setStep("success");
     } catch (e) {
-      setSubmitError(e.message);
+      console.error("register network error", e);
+      setSubmitError(
+        "Cannot reach the registration server. Is the backend running on port 8000?"
+      );
+      return;
     }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      console.error("register failed", res.status, data);
+      if (res.status === 503) {
+        // Backend already gave us a friendly one-liner via `detail`.
+        setSubmitError(
+          (data && data.detail) ||
+            "Cloud storage is unavailable — registration was not saved. Please retry."
+        );
+      } else if (res.status === 422) {
+        // Pydantic validation — mostly caught client-side already, but just in case.
+        setSubmitError(
+          "Some fields are invalid. Go back and double-check the form."
+        );
+      } else {
+        setSubmitError(
+          (data && data.detail) ||
+            `Registration failed (HTTP ${res.status}). Please retry or contact admin.`
+        );
+      }
+      return;
+    }
+
+    setResult(data);
+    setStep("success");
   }
 
   if (step === "success" && result) {

@@ -25,6 +25,10 @@ from models import PatientRegistrationRequest, PatientRegistrationResponse, Pati
 import csv_store
 import gcs_client
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:     %(name)s: %(message)s",
+)
 log = logging.getLogger("register_app")
 
 
@@ -92,9 +96,10 @@ def _allocate_and_upload_with_retry(req: PatientRegistrationRequest, bmi: float)
             except Exception as e:
                 # Could not reach GCS at all; fail fast so we never write
                 # a local-only row that will be wiped on next startup.
+                log.exception("GCS generation probe failed")
                 raise HTTPException(
                     status_code=503,
-                    detail=f"GCS unreachable, registration rejected: {e}",
+                    detail=gcs_client.friendly_error(e),
                 ) from e
 
             label = csv_store.next_label(req.metabolic_group)
@@ -121,24 +126,27 @@ def _allocate_and_upload_with_retry(req: PatientRegistrationRequest, bmi: float)
                 try:
                     gcs_client.download_patients_csv(csv_store.CSV_PATH)
                 except Exception as sync_err:
+                    log.exception("Re-sync after OCC conflict failed")
                     _rollback_last_row(csv_store.CSV_PATH)
                     raise HTTPException(
                         status_code=503,
-                        detail=f"Re-sync after conflict failed: {sync_err}",
+                        detail=gcs_client.friendly_error(sync_err),
                     ) from sync_err
             except Exception as e:
+                log.exception("GCS patients.csv upload failed")
                 _rollback_last_row(csv_store.CSV_PATH)
                 raise HTTPException(
                     status_code=503,
-                    detail=f"GCS patients.csv upload failed: {e}",
+                    detail=gcs_client.friendly_error(e),
                 ) from e
 
+    log.error(
+        "CSV upload exhausted %d retries, last error: %s",
+        _MAX_CSV_UPLOAD_RETRIES, last_error,
+    )
     raise HTTPException(
         status_code=503,
-        detail=(
-            f"GCS patients.csv upload failed after "
-            f"{_MAX_CSV_UPLOAD_RETRIES} conflict retries: {last_error}"
-        ),
+        detail="Could not save to cloud storage after several attempts. Please retry.",
     )
 
 
@@ -193,7 +201,10 @@ def register_patient(req: PatientRegistrationRequest):
     try:
         gcs_client.upload_patient_metadata(record)
     except Exception as e:
-        warnings.append(f"GCS metadata.json upload failed: {e}")
+        log.exception("GCS metadata.json upload failed for %s", record.patient_label)
+        warnings.append(
+            f"Patient saved, but metadata file did not sync: {gcs_client.friendly_error(e)}"
+        )
 
     return PatientRegistrationResponse(patient_label=label, warnings=warnings)
 
