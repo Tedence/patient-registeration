@@ -46,6 +46,19 @@ def upload_patients_csv(local_path: Path) -> None:
     blob.upload_from_filename(str(local_path), content_type="text/csv")
 
 
+def download_patients_csv(local_path: Path) -> bool:
+    """Overwrite local CSV with remote copy. Returns True if sync occurred."""
+    bucket = _bucket()
+    if bucket is None:
+        return False
+    blob = bucket.blob(_PATIENTS_CSV_BLOB)
+    if not blob.exists():
+        return False
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    blob.download_to_filename(str(local_path))
+    return True
+
+
 def upload_patient_metadata(record: PatientRecord) -> None:
     bucket = _bucket()
     if bucket is None:

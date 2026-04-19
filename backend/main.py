@@ -1,3 +1,5 @@
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query
@@ -7,7 +9,23 @@ from models import PatientRegistrationRequest, PatientRegistrationResponse, Pati
 import csv_store
 import gcs_client
 
-app = FastAPI(title="Patient Registration API")
+log = logging.getLogger("register_app")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        synced = gcs_client.download_patients_csv(csv_store.CSV_PATH)
+        if synced:
+            log.info("Synced patients.csv from GCS (remote is source of truth)")
+        else:
+            log.info("Skipped GCS sync (disabled or remote blob missing)")
+    except Exception as e:
+        log.warning("GCS startup sync failed, using local patients.csv: %s", e)
+    yield
+
+
+app = FastAPI(title="Patient Registration API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
