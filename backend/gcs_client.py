@@ -171,6 +171,8 @@ def _maybe_inject_failure(operation: str) -> None:
         raise gexc.PreconditionFailed("Precondition Failed: generation mismatch")
     if mode == "metadata" and operation == "metadata":
         raise gexc.InternalServerError("500 backend error uploading metadata")
+    if mode == "session" and operation == "session":
+        raise gexc.InternalServerError("500 backend error uploading session csv")
 
 
 def upload_patients_csv(
@@ -253,6 +255,67 @@ def download_patients_csv(local_path: Path) -> bool:
         )
 
     return True
+
+
+def upload_session_csv(blob_path: str, csv_content: str) -> None:
+    """Upload a session CSV string to `gs://{bucket}/{blob_path}`.
+
+    No-op when GCS is disabled (tests). Overwrites atomically — session
+    updates are full-file rewrites by design.
+    """
+    bucket = _bucket()
+    if bucket is None:
+        return
+    _maybe_inject_failure("session")
+    blob = bucket.blob(blob_path)
+    blob.upload_from_string(csv_content, content_type="text/csv")
+
+
+def download_session_csv(blob_path: str) -> str | None:
+    """Fetch a session CSV as text. Returns None if missing or GCS disabled."""
+    bucket = _bucket()
+    if bucket is None:
+        return None
+    from google.api_core.exceptions import NotFound
+
+    blob = bucket.blob(blob_path)
+    try:
+        return blob.download_as_text()
+    except NotFound:
+        return None
+
+
+def list_sessions_for_patient(patient_label: str) -> list[str]:
+    """List session blob paths under `{patient_label}/`.
+
+    Filters to the `session_*.csv` naming convention so `metadata.json` and
+    anything else the bucket might accumulate are excluded.
+    """
+    bucket = _bucket()
+    if bucket is None:
+        return []
+    prefix = f"{patient_label}/"
+    paths: list[str] = []
+    for blob in bucket.list_blobs(prefix=prefix):
+        name = blob.name
+        # Expect {label}/{date}/session_*.csv (3 path parts, 2 slashes).
+        parts = name.split("/")
+        if len(parts) == 3 and parts[2].startswith("session_") and parts[2].endswith(".csv"):
+            paths.append(name)
+    return paths
+
+
+def delete_session_csv(blob_path: str) -> None:
+    """Delete a session blob. Missing blob is not an error (idempotent)."""
+    bucket = _bucket()
+    if bucket is None:
+        return
+    from google.api_core.exceptions import NotFound
+
+    try:
+        bucket.blob(blob_path).delete()
+    except NotFound:
+        return
 
 
 def upload_patient_metadata(record: PatientRecord) -> None:
