@@ -49,6 +49,27 @@ const EDITABLE_COLUMNS = [
   { key: "operator_notes", label: "Notes", type: "text" },
 ];
 
+const CORE_KEYS = [
+  "patient_label",
+  "registered_at_utc",
+  "age",
+  "sex",
+  "height_cm",
+  "weight_kg",
+  "bmi",
+  "metabolic_group",
+  "diabetes_duration_years",
+  "diabetes_medication",
+  "insulin_use",
+  "smoking_status",
+  "cgm_device_type",
+  "cgm_own_device",
+  "apple_watch",
+];
+
+const CORE_COLUMNS = EDITABLE_COLUMNS.filter((c) => CORE_KEYS.includes(c.key));
+const OPTIONAL_COLUMNS = EDITABLE_COLUMNS.filter((c) => !CORE_KEYS.includes(c.key));
+
 const TOKEN_KEY = "admin_token";
 const USER_KEY = "admin_user";
 
@@ -101,13 +122,14 @@ export default function EditTable({ api }) {
     !!sessionStorage.getItem(TOKEN_KEY) && !!sessionStorage.getItem(USER_KEY)
   );
   const [rows, setRows] = useState([]);
-  const [edits, setEdits] = useState({}); // {label: {field: value}}
+  const [edits, setEdits] = useState({});
   const [loading, setLoading] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const [msg, setMsg] = useState("");
   const [showDeleted, setShowDeleted] = useState(false);
   const [adding, setAdding] = useState(false);
   const [newRow, setNewRow] = useState({});
+  const [selected, setSelected] = useState(null);
 
   const adminHeaders = useCallback(
     () => ({
@@ -148,6 +170,11 @@ export default function EditTable({ api }) {
     [rows, showDeleted]
   );
 
+  const selectedRow = useMemo(
+    () => rows.find((r) => r.patient_label === selected) || null,
+    [rows, selected]
+  );
+
   if (!authed) return <AuthGate onReady={() => setAuthed(true)} />;
 
   function logout() {
@@ -160,6 +187,16 @@ export default function EditTable({ api }) {
     setEdits((e) => ({ ...e, [label]: { ...(e[label] || {}), [key]: value } }));
   }
 
+  function closeCard() {
+    if (selected) {
+      setEdits((e) => {
+        const { [selected]: _discard, ...rest } = e;
+        return rest;
+      });
+    }
+    setSelected(null);
+  }
+
   async function saveRow(label) {
     const patch = edits[label];
     if (!patch || Object.keys(patch).length === 0) return;
@@ -169,11 +206,12 @@ export default function EditTable({ api }) {
       headers: { "Content-Type": "application/json", ...adminHeaders() },
       body: JSON.stringify(coercePatch(patch)),
     });
-    await handleResponse(res, label, `${label} saved.`);
+    const closed = await handleResponse(res, label, `${label} saved.`);
     setEdits((e) => {
-      const { [label]: _, ...rest } = e;
+      const { [label]: _discard, ...rest } = e;
       return rest;
     });
+    if (closed) setSelected(null);
   }
 
   async function deleteRow(label) {
@@ -183,7 +221,8 @@ export default function EditTable({ api }) {
       method: "DELETE",
       headers: adminHeaders(),
     });
-    await handleResponse(res, label, `${label} deleted.`);
+    const closed = await handleResponse(res, label, `${label} deleted.`);
+    if (closed) setSelected(null);
   }
 
   async function addRow() {
@@ -209,16 +248,17 @@ export default function EditTable({ api }) {
     if (res.status === 401) {
       setMsg("Admin auth failed. Re-enter credentials.");
       logout();
-      return;
+      return false;
     }
     if (!res.ok) {
       setMsg(
         `Save failed (${label}): ${(data && data.detail) || `HTTP ${res.status}`}`
       );
-      return;
+      return false;
     }
     setMsg(ok + (data?.warnings?.length ? ` (${data.warnings.join("; ")})` : ""));
     loadAll();
+    return true;
   }
 
   return (
@@ -247,61 +287,46 @@ export default function EditTable({ api }) {
         {loadErr && <div className="block-error">{loadErr}</div>}
         {loading ? (
           <p>Loading...</p>
+        ) : visible.length === 0 ? (
+          <p style={{ color: "#999", padding: 16 }}>No patients to show.</p>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="patient-table" style={{ fontSize: 12 }}>
-              <thead>
-                <tr>
-                  {EDITABLE_COLUMNS.map((c) => (
-                    <th key={c.key}>{c.label}</th>
-                  ))}
-                  <th>Actions</th>
+          <table className="patient-table">
+            <thead>
+              <tr>
+                <th>Patient Label</th>
+                <th>Registration Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((r) => (
+                <tr
+                  key={r.patient_label}
+                  onClick={() => setSelected(r.patient_label)}
+                  style={r.deleted_at ? { opacity: 0.45 } : {}}
+                >
+                  <td>
+                    <strong>{r.patient_label}</strong>
+                  </td>
+                  <td>
+                    {new Date(r.registered_at_utc).toLocaleDateString()}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {visible.map((r) => {
-                  const e = edits[r.patient_label] || {};
-                  const dirty = Object.keys(e).length > 0;
-                  return (
-                    <tr
-                      key={r.patient_label}
-                      style={r.deleted_at ? { opacity: 0.45 } : {}}
-                    >
-                      {EDITABLE_COLUMNS.map((c) => (
-                        <td key={c.key}>
-                          <Cell
-                            col={c}
-                            value={c.key in e ? e[c.key] : r[c.key]}
-                            onChange={(v) => setCell(r.patient_label, c.key, v)}
-                          />
-                        </td>
-                      ))}
-                      <td>
-                        <button
-                          className="btn btn-primary"
-                          disabled={!dirty}
-                          style={{ padding: "4px 8px", fontSize: 12 }}
-                          onClick={() => saveRow(r.patient_label)}
-                        >
-                          Save
-                        </button>
-                        <button
-                          className="btn btn-secondary"
-                          style={{ padding: "4px 8px", fontSize: 12, marginLeft: 4 }}
-                          onClick={() => deleteRow(r.patient_label)}
-                          disabled={!!r.deleted_at}
-                        >
-                          Delete
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
+
+      {selectedRow && (
+        <EditCard
+          row={selectedRow}
+          edits={edits[selectedRow.patient_label] || {}}
+          onField={(k, v) => setCell(selectedRow.patient_label, k, v)}
+          onClose={closeCard}
+          onSave={() => saveRow(selectedRow.patient_label)}
+          onDelete={() => deleteRow(selectedRow.patient_label)}
+        />
+      )}
 
       {adding && (
         <div className="detail-overlay" onClick={() => setAdding(false)}>
@@ -341,6 +366,65 @@ export default function EditTable({ api }) {
   );
 }
 
+function EditCard({ row, edits, onField, onClose, onSave, onDelete }) {
+  const dirty = Object.keys(edits).length > 0;
+  const valueFor = (key) => (key in edits ? edits[key] : row[key]);
+
+  const section = (cols) => (
+    <>
+      {cols.map((c) => (
+        <div className="form-group" key={c.key}>
+          <label>{c.label}</label>
+          <Cell col={c} value={valueFor(c.key)} onChange={(v) => onField(c.key, v)} />
+        </div>
+      ))}
+    </>
+  );
+
+  return (
+    <div className="detail-overlay" onClick={onClose}>
+      <div
+        className="detail-card"
+        onClick={(ev) => ev.stopPropagation()}
+        style={{ maxWidth: 720, width: "92%" }}
+      >
+        <h2 style={{ marginBottom: 4 }}>{row.patient_label}</h2>
+        {row.deleted_at && (
+          <div className="warning" style={{ marginBottom: 8 }}>
+            Tombstoned at {new Date(row.deleted_at).toLocaleString()}
+          </div>
+        )}
+
+        <h3 style={{ marginTop: 12 }}>Core</h3>
+        <div className="form-row" style={{ flexWrap: "wrap" }}>
+          {section(CORE_COLUMNS)}
+        </div>
+
+        <h3 style={{ marginTop: 16 }}>Optional</h3>
+        <div className="form-row" style={{ flexWrap: "wrap" }}>
+          {section(OPTIONAL_COLUMNS)}
+        </div>
+
+        <div className="btn-group" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+          <button className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={onDelete}
+            disabled={!!row.deleted_at}
+          >
+            Delete
+          </button>
+          <button className="btn btn-primary" onClick={onSave} disabled={!dirty}>
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Cell({ col, value, onChange }) {
   if (col.type === "bool") {
     return (
@@ -367,7 +451,6 @@ function Cell({ col, value, onChange }) {
       type={col.type}
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value)}
-      style={{ width: "100%", minWidth: 80 }}
     />
   );
 }
