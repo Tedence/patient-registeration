@@ -142,6 +142,37 @@ def get_patients_csv_generation() -> int | None:
     return blob.generation
 
 
+def _maybe_inject_failure(operation: str) -> None:
+    """Dev/demo failure injection — gated by GCS_FAIL_MODE env var.
+
+    Recognized modes (applied to the matching operation):
+      - `missing`    → NotFound ("bucket does not exist")
+      - `creds`      → DefaultCredentialsError
+      - `network`    → ConnectionError
+      - `conflict`   → PreconditionFailed (only applied to csv upload)
+      - `metadata`   → InternalServerError (only applied to metadata upload)
+
+    `operation` is "csv" or "metadata". Ignored in production unless
+    GCS_FAIL_MODE is explicitly set.
+    """
+    mode = os.getenv("GCS_FAIL_MODE", "").lower()
+    if not mode:
+        return
+    from google.api_core import exceptions as gexc
+    from google.auth import exceptions as authexc
+
+    if mode == "missing":
+        raise gexc.NotFound("The specified bucket does not exist.")
+    if mode == "creds":
+        raise authexc.DefaultCredentialsError("Your default credentials were not found.")
+    if mode == "network":
+        raise ConnectionError("connection refused")
+    if mode == "conflict" and operation == "csv":
+        raise gexc.PreconditionFailed("Precondition Failed: generation mismatch")
+    if mode == "metadata" and operation == "metadata":
+        raise gexc.InternalServerError("500 backend error uploading metadata")
+
+
 def upload_patients_csv(
     local_path: Path, if_generation_match: int | None = None
 ) -> None:
@@ -159,6 +190,7 @@ def upload_patients_csv(
     bucket = _bucket()
     if bucket is None:
         return
+    _maybe_inject_failure("csv")
     blob = bucket.blob(_PATIENTS_CSV_BLOB)
     kwargs = {"content_type": "text/csv"}
     if if_generation_match is not None:
@@ -235,6 +267,7 @@ def upload_patient_metadata(record: PatientRecord) -> None:
     bucket = _bucket()
     if bucket is None:
         return
+    _maybe_inject_failure("metadata")
     payload = record.model_dump(mode="json")
     blob = bucket.blob(f"{record.patient_label}/metadata.json")
     blob.upload_from_string(
