@@ -70,6 +70,9 @@ export default function SessionRecorder({ api, patientLabel, draftId, onClose })
     saveDraft(draft);
   }, [draft]);
 
+  // All interventions with an unmatched "start" row, grouped by type.
+  // Concurrent interventions of the same type are allowed — each becomes
+  // its own row with an independent Stop button.
   const ongoingByType = useMemo(() => {
     const starts = new Map();
     const stops = new Set();
@@ -78,11 +81,14 @@ export default function SessionRecorder({ api, patientLabel, draftId, onClose })
       if (ev.phase === "start") starts.set(ev.intervention_id, ev);
       if (ev.phase === "stop") stops.add(ev.intervention_id);
     }
-    const out = { food: null, ensure: null, insulin: null };
+    const out = { food: [], ensure: [], insulin: [] };
     for (const [id, ev] of starts.entries()) {
-      if (!stops.has(id) && out[ev.intervention_type] === null) {
-        out[ev.intervention_type] = ev;
-      }
+      if (!stops.has(id)) out[ev.intervention_type].push(ev);
+    }
+    for (const k of Object.keys(out)) {
+      out[k].sort(
+        (a, b) => new Date(a.ts_utc).getTime() - new Date(b.ts_utc).getTime()
+      );
     }
     return out;
   }, [draft.events]);
@@ -148,17 +154,15 @@ export default function SessionRecorder({ api, patientLabel, draftId, onClose })
     setErr("");
   }
 
-  function stopIntervention(type) {
-    const ongoing = ongoingByType[type];
-    if (!ongoing) return;
+  function stopIntervention(interventionId, fallbackOperator, type) {
     addEvent({
       ts_utc: nowIso(),
       kind: "intervention",
       intervention_type: type,
       phase: "stop",
-      intervention_id: ongoing.intervention_id,
+      intervention_id: interventionId,
       text: "",
-      operator: draft.operator.trim() || ongoing.operator,
+      operator: draft.operator.trim() || fallbackOperator,
     });
   }
 
@@ -275,12 +279,16 @@ export default function SessionRecorder({ api, patientLabel, draftId, onClose })
         </div>
 
         <h3 style={{ marginTop: 16 }}>Interventions ⏲</h3>
+        <p style={{ color: "#666", fontSize: 13, marginTop: -4 }}>
+          Multiple concurrent interventions of the same type are allowed —
+          each Start creates its own stoppable row.
+        </p>
         <table className="patient-table">
           <thead>
             <tr>
               <th>Type</th>
               <th>Label / notes</th>
-              <th>Status</th>
+              <th>Ongoing</th>
               <th></th>
             </tr>
           </thead>
@@ -289,51 +297,65 @@ export default function SessionRecorder({ api, patientLabel, draftId, onClose })
               const ongoing = ongoingByType[key];
               return (
                 <tr key={key}>
-                  <td>{label}</td>
+                  <td style={{ verticalAlign: "top" }}>{label}</td>
                   <td>
-                    {ongoing ? (
-                      <span style={{ color: "#666" }}>
-                        {ongoing.text || "(no label)"}
-                      </span>
-                    ) : (
-                      <input
-                        value={interventionText[key]}
-                        onChange={(e) =>
-                          setInterventionText((t) => ({
-                            ...t,
-                            [key]: e.target.value,
-                          }))
-                        }
-                        placeholder="optional label"
-                      />
-                    )}
+                    <input
+                      value={interventionText[key]}
+                      onChange={(e) =>
+                        setInterventionText((t) => ({
+                          ...t,
+                          [key]: e.target.value,
+                        }))
+                      }
+                      placeholder="optional label for next start"
+                    />
                   </td>
                   <td>
-                    {ongoing ? (
-                      <span style={{ color: "#c0392b", fontWeight: 600 }}>
-                        ● ongoing since{" "}
-                        {new Date(ongoing.ts_utc).toLocaleTimeString()}
-                      </span>
+                    {ongoing.length === 0 ? (
+                      <span style={{ color: "#999" }}>none</span>
                     ) : (
-                      <span style={{ color: "#999" }}>idle</span>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {ongoing.map((ev) => (
+                          <div
+                            key={ev.intervention_id}
+                            style={{
+                              display: "flex",
+                              gap: 8,
+                              alignItems: "center",
+                            }}
+                          >
+                            <span style={{ color: "#c0392b", fontWeight: 600 }}>
+                              ●
+                            </span>
+                            <span style={{ fontSize: 13 }}>
+                              {ev.text || "(no label)"} — since{" "}
+                              {new Date(ev.ts_utc).toLocaleTimeString()}
+                            </span>
+                            <button
+                              className="btn btn-secondary"
+                              onClick={() =>
+                                stopIntervention(
+                                  ev.intervention_id,
+                                  ev.operator,
+                                  key
+                                )
+                              }
+                              style={{ padding: "2px 10px", fontSize: 13 }}
+                            >
+                              Stop
+                            </button>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </td>
-                  <td>
-                    {ongoing ? (
-                      <button
-                        className="btn btn-secondary"
-                        onClick={() => stopIntervention(key)}
-                      >
-                        Stop
-                      </button>
-                    ) : (
-                      <button
-                        className="btn btn-primary"
-                        onClick={() => startIntervention(key)}
-                      >
-                        Start
-                      </button>
-                    )}
+                  <td style={{ verticalAlign: "top" }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => startIntervention(key)}
+                    >
+                      Start
+                    </button>
                   </td>
                 </tr>
               );
