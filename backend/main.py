@@ -1,3 +1,19 @@
+"""
+FastAPI entrypoint for the patient registration service.
+
+Three endpoints power the React frontend:
+  - POST /api/register        register a new patient, auto-assign label, mirror to GCS
+  - GET  /api/patients        list all patients (optional metabolic_group filter)
+  - GET  /api/patients/{label} fetch a single patient by label
+
+Persistence is dual-layer:
+  - Local:  `data/patients.csv` (append-only, thread-safe via csv_store._lock)
+  - Remote: `gs://tedence-gav-yam/` — full CSV at root + per-patient metadata.json
+
+The remote bucket is the source of truth across restarts: the lifespan hook
+below pulls the remote CSV over the local copy before any requests are served.
+"""
+
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,6 +30,12 @@ log = logging.getLogger("register_app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Sync local patients.csv from GCS before accepting any requests.
+
+    Runs once on backend startup. Failures here are non-fatal — the server
+    still starts and falls back to whatever local CSV exists. Shutdown is a
+    no-op (nothing to tear down).
+    """
     try:
         synced = gcs_client.download_patients_csv(csv_store.CSV_PATH)
         if synced:
@@ -37,6 +59,24 @@ app.add_middleware(
 
 @app.post("/api/register", response_model=PatientRegistrationResponse)
 def register_patient(req: PatientRegistrationRequest):
+    """Register a new patient and mirror the registration to GCS.
+
+    Flow:
+      1. Compute BMI server-side (kg / m²) and emit a soft warning if outside
+         15–50 — Pydantic validation has already enforced hard bounds on age,
+         height, weight, and the metabolic-group-conditional diabetes fields.
+      2. Under `csv_store._lock`, allocate the next label (NG_/T1_/T2_ prefix
+         + zero-padded sequence) and append the full record to patients.csv.
+         The lock guarantees label uniqueness under concurrent requests.
+      3. Outside the lock, mirror to GCS:
+           - overwrite `gs://{bucket}/patients.csv` with the full local file
+           - write `gs://{bucket}/{label}/metadata.json` for this patient
+         Both uploads are wrapped independently: if either fails the request
+         still returns 200, the local write is preserved, and the error text
+         flows back via `response.warnings`.
+
+    Returns the assigned patient_label plus any BMI / GCS warnings.
+    """
     bmi = round(req.weight_kg / (req.height_cm / 100) ** 2, 1)
 
     warnings: list[str] = []
@@ -68,6 +108,15 @@ def register_patient(req: PatientRegistrationRequest):
 
 @app.get("/api/patients")
 def list_patients(metabolic_group: str | None = Query(None)):
+    """Return a lightweight summary of every registered patient.
+
+    Only the fields needed for the frontend list view are returned (label,
+    age, sex, metabolic_group, registered_at). Full records are available via
+    `GET /api/patients/{label}`.
+
+    When `metabolic_group` is provided (NG / T1DM / T2DM), rows are filtered
+    in-process after reading the full CSV — fine at expected patient volume.
+    """
     patients = csv_store.read_all()
     if metabolic_group:
         patients = [p for p in patients if p.metabolic_group == metabolic_group]
@@ -85,6 +134,7 @@ def list_patients(metabolic_group: str | None = Query(None)):
 
 @app.get("/api/patients/{label}")
 def get_patient(label: str):
+    """Return the full PatientRecord for a single label, or 404 if unknown."""
     patient = csv_store.read_one(label)
     if not patient:
         raise HTTPException(status_code=404, detail=f"Patient {label} not found")
