@@ -78,6 +78,35 @@ class PatientRecord(BaseModel):
     last_meal_time: str | None = None
     last_meal_description: str | None = None
     operator_notes: str | None = None
+    deleted_at: datetime | None = None
+
+
+class PatientUpdateRequest(BaseModel):
+    """Partial patient update — any subset of editable fields.
+
+    All fields optional; only provided fields are patched. Validation of
+    diabetes-conditional rules happens post-merge in the endpoint.
+    """
+    patient_label: str | None = None
+    registered_at_utc: datetime | None = None
+    age: int | None = Field(default=None, ge=18, le=65)
+    sex: Literal["male", "female"] | None = None
+    height_cm: int | None = Field(default=None, ge=100, le=220)
+    weight_kg: float | None = Field(default=None, ge=30, le=300)
+    metabolic_group: Literal["T1DM", "T2DM", "normoglycemic"] | None = None
+    diabetes_duration_years: int | None = None
+    diabetes_medication: str | None = None
+    insulin_use: Literal["pump", "injections", "none"] | None = None
+    smoking_status: Literal["current", "former", "never"] | None = None
+    cgm_device_type: Literal["libre", "medtronic", "dexcom", "other"] | None = None
+    cgm_own_device: bool | None = None
+    apple_watch: bool | None = None
+    first_name: str | None = None
+    surname: str | None = None
+    blood_type: Literal["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"] | None = None
+    last_meal_time: str | None = None
+    last_meal_description: str | None = None
+    operator_notes: str | None = None
 
 
 class PatientRegistrationResponse(BaseModel):

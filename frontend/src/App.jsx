@@ -1,6 +1,7 @@
 import { useState } from "react";
 import RegistrationForm from "./RegistrationForm";
 import PatientList from "./PatientList";
+import EditTable from "./EditTable";
 import tedenceLogo from "./assets/tedence_logo.png";
 
 const API = "http://localhost:8000";
@@ -27,10 +28,17 @@ function App() {
         >
           Patient List
         </button>
+        <button
+          className={view === "edit" ? "active" : ""}
+          onClick={() => setView("edit")}
+        >
+          Edit Table
+        </button>
       </nav>
       <div className="container">
         {view === "register" && <RegistrationForm api={API} />}
         {view === "list" && <PatientList api={API} />}
+        {view === "edit" && <EditTable api={API} />}
       </div>
     </>
   );
