@@ -22,10 +22,15 @@ requires credentials — keeps tests and offline dev clean.
 """
 
 import json
+import logging
 import os
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from models import PatientRecord
+
+log = logging.getLogger("register_app.gcs")
 
 _DEFAULT_BUCKET = "tedence-gav-yam"
 _PATIENTS_CSV_BLOB = "patients.csv"
@@ -58,15 +63,18 @@ def _bucket():
     if _cache_initialized:
         return _cached_bucket
 
-    _cache_initialized = True
     if not _enabled():
+        _cache_initialized = True
         return None
 
     from google.cloud import storage
 
     client = storage.Client()
     bucket_name = os.getenv("GCS_BUCKET", _DEFAULT_BUCKET)
-    _cached_bucket = client.bucket(bucket_name)
+    bucket = client.bucket(bucket_name)
+
+    _cached_bucket = bucket
+    _cache_initialized = True
     return _cached_bucket
 
 
@@ -81,18 +89,64 @@ def _reset_cache() -> None:
     _cache_initialized = False
 
 
-def upload_patients_csv(local_path: Path) -> None:
+def get_patients_csv_generation() -> int | None:
+    """Return the current generation number of the remote patients.csv.
+
+    Used for optimistic-concurrency uploads: the caller captures the
+    generation before building a new CSV, then passes it to
+    `upload_patients_csv(..., if_generation_match=...)`. If another process
+    has uploaded in the meantime, the conditional upload fails and the
+    caller must re-sync + retry.
+
+    Returns:
+        int  — the current generation (monotonically increasing per write).
+        0    — remote blob does not exist yet (valid precondition for
+               create-if-absent).
+        None — GCS disabled.
+    """
+    bucket = _bucket()
+    if bucket is None:
+        return None
+    from google.api_core.exceptions import NotFound
+
+    blob = bucket.blob(_PATIENTS_CSV_BLOB)
+    try:
+        blob.reload()  # populate .generation
+    except NotFound:
+        return 0
+    return blob.generation
+
+
+def upload_patients_csv(
+    local_path: Path, if_generation_match: int | None = None
+) -> None:
     """Upload the full local patients.csv to `gs://{bucket}/patients.csv`.
 
     No-op when GCS is disabled. Overwrites the remote blob atomically (GCS
-    blob writes are all-or-nothing), so the remote file is never observed in
-    a half-written state.
+    blob writes are all-or-nothing).
+
+    When `if_generation_match` is provided, the upload is conditional: it
+    succeeds only if the remote blob's current generation equals that value.
+    Pass `0` to require the blob does not yet exist. On mismatch the GCS
+    SDK raises `google.api_core.exceptions.PreconditionFailed` (HTTP 412),
+    which the caller should treat as a concurrent-writer signal and retry.
     """
     bucket = _bucket()
     if bucket is None:
         return
     blob = bucket.blob(_PATIENTS_CSV_BLOB)
-    blob.upload_from_filename(str(local_path), content_type="text/csv")
+    kwargs = {"content_type": "text/csv"}
+    if if_generation_match is not None:
+        kwargs["if_generation_match"] = if_generation_match
+    blob.upload_from_filename(str(local_path), **kwargs)
+
+
+def _count_csv_rows(path: Path) -> int:
+    """Count data rows in a CSV (excludes header). Returns 0 if file missing."""
+    if not path.exists():
+        return 0
+    with open(path, newline="") as f:
+        return max(0, sum(1 for _ in f) - 1)
 
 
 def download_patients_csv(local_path: Path) -> bool:
@@ -100,6 +154,12 @@ def download_patients_csv(local_path: Path) -> bool:
 
     Called from the FastAPI lifespan on backend startup so in-memory state and
     label generation always begin from the canonical remote CSV.
+
+    Safety net: if a local file exists, it is copied to
+    `patients.csv.bak.{UTC_TIMESTAMP}` before being overwritten. When the
+    local row count exceeds the remote row count — a signal that offline
+    registrations never made it to GCS — a warning is logged so operators
+    can reconcile from the backup.
 
     Returns:
         True  — remote blob existed and was downloaded.
@@ -115,7 +175,26 @@ def download_patients_csv(local_path: Path) -> bool:
     if not blob.exists():
         return False
     local_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if local_path.exists():
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = local_path.with_suffix(f".csv.bak.{ts}")
+        shutil.copy2(local_path, backup)
+        local_rows = _count_csv_rows(local_path)
+    else:
+        backup = None
+        local_rows = 0
+
     blob.download_to_filename(str(local_path))
+    remote_rows = _count_csv_rows(local_path)
+
+    if local_rows > remote_rows:
+        log.warning(
+            "Local CSV had %d rows but remote only %d — likely unsynced offline "
+            "registrations. Backup preserved at %s",
+            local_rows, remote_rows, backup,
+        )
+
     return True
 
 

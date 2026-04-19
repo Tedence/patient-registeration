@@ -57,6 +57,93 @@ app.add_middleware(
 )
 
 
+_MAX_CSV_UPLOAD_RETRIES = 3
+
+
+def _allocate_and_upload_with_retry(req: PatientRegistrationRequest, bmi: float):
+    """Allocate a label, append locally, upload to GCS with OCC. Retry on conflict.
+
+    Uses `if_generation_match` to defend against two operators racing to
+    register patients against the same remote CSV generation (see critical
+    issue #2 in the branch review). On a precondition failure:
+      - roll back our last local row,
+      - re-sync local CSV from the now-newer remote,
+      - re-allocate the label against the fresh state,
+      - retry.
+
+    After `_MAX_CSV_UPLOAD_RETRIES` conflicts we bail out and return a
+    warning, but the most recent local append is preserved (non-fatal per
+    the project's failure semantics).
+
+    Returns (label, record, warning_or_None).
+    """
+    try:
+        from google.api_core.exceptions import PreconditionFailed
+    except ImportError:
+        PreconditionFailed = ()  # type: ignore[assignment]
+
+    last_error: Exception | None = None
+
+    for attempt in range(_MAX_CSV_UPLOAD_RETRIES):
+        with csv_store._lock:
+            try:
+                generation = gcs_client.get_patients_csv_generation()
+            except Exception as e:
+                generation = None
+                last_error = e
+
+            label = csv_store.next_label(req.metabolic_group)
+            record = PatientRecord(
+                patient_label=label,
+                registered_at_utc=datetime.now(timezone.utc),
+                bmi=bmi,
+                **req.model_dump(),
+            )
+            csv_store.append_patient(record)
+
+            try:
+                gcs_client.upload_patients_csv(
+                    csv_store.CSV_PATH, if_generation_match=generation
+                )
+                return label, record, None
+            except PreconditionFailed as e:
+                last_error = e
+                _rollback_last_row(csv_store.CSV_PATH)
+                log.info(
+                    "CSV upload conflict (attempt %d/%d), re-syncing and retrying",
+                    attempt + 1, _MAX_CSV_UPLOAD_RETRIES,
+                )
+                try:
+                    gcs_client.download_patients_csv(csv_store.CSV_PATH)
+                except Exception as sync_err:
+                    last_error = sync_err
+                    break
+            except Exception as e:
+                last_error = e
+                return label, record, f"GCS patients.csv upload failed: {e}"
+
+    return label, record, (
+        f"GCS patients.csv upload failed after {_MAX_CSV_UPLOAD_RETRIES} "
+        f"conflict retries: {last_error}"
+    )
+
+
+def _rollback_last_row(path) -> None:
+    """Remove the last data row from a CSV. Used after an OCC upload conflict.
+
+    Keeps the header intact so the next append sees a non-empty file. Safe
+    even when the CSV has only a header (nothing to remove).
+    """
+    if not path.exists():
+        return
+    with open(path, "r", newline="") as f:
+        lines = f.readlines()
+    if len(lines) <= 1:
+        return
+    with open(path, "w", newline="") as f:
+        f.writelines(lines[:-1])
+
+
 @app.post("/api/register", response_model=PatientRegistrationResponse)
 def register_patient(req: PatientRegistrationRequest):
     """Register a new patient and mirror the registration to GCS.
@@ -83,20 +170,9 @@ def register_patient(req: PatientRegistrationRequest):
     if bmi < 15 or bmi > 50:
         warnings.append(f"BMI {bmi} is outside the expected range (15–50)")
 
-    with csv_store._lock:
-        label = csv_store.next_label(req.metabolic_group)
-        record = PatientRecord(
-            patient_label=label,
-            registered_at_utc=datetime.now(timezone.utc),
-            bmi=bmi,
-            **req.model_dump(),
-        )
-        csv_store.append_patient(record)
-
-    try:
-        gcs_client.upload_patients_csv(csv_store.CSV_PATH)
-    except Exception as e:
-        warnings.append(f"GCS patients.csv upload failed: {e}")
+    label, record, csv_warning = _allocate_and_upload_with_retry(req, bmi)
+    if csv_warning:
+        warnings.append(csv_warning)
 
     try:
         gcs_client.upload_patient_metadata(record)
