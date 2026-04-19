@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from models import PatientRegistrationRequest, PatientRegistrationResponse, PatientRecord
 import csv_store
+import gcs_client
 
 app = FastAPI(title="Patient Registration API")
 
@@ -33,6 +34,16 @@ def register_patient(req: PatientRegistrationRequest):
             **req.model_dump(),
         )
         csv_store.append_patient(record)
+
+    try:
+        gcs_client.upload_patients_csv(csv_store.CSV_PATH)
+    except Exception as e:
+        warnings.append(f"GCS patients.csv upload failed: {e}")
+
+    try:
+        gcs_client.upload_patient_metadata(record)
+    except Exception as e:
+        warnings.append(f"GCS metadata.json upload failed: {e}")
 
     return PatientRegistrationResponse(patient_label=label, warnings=warnings)
 
