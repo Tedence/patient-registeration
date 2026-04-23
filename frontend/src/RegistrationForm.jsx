@@ -27,7 +27,7 @@ function validate(form) {
   const errs = {};
   const age = Number(form.age);
   if (!form.age || isNaN(age)) errs.age = "Required";
-  else if (age < 18 || age > 65) errs.age = "Must be 18–65";
+  else if (age < 3 || age > 120) errs.age = "Must be 3–120";
 
   if (!form.sex) errs.sex = "Required";
 
@@ -209,7 +209,7 @@ export default function RegistrationForm({ api }) {
               value={form.age}
               onChange={(e) => set("age", e.target.value)}
               onBlur={() => blur("age")}
-              placeholder="18–65"
+              placeholder="3–120"
             />
             {err("age") && <div className="error">{errors.age}</div>}
           </div>

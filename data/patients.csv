@@ -1,4 +1,4 @@
-patient_label,registered_at_utc,age,sex,height_cm,weight_kg,bmi,metabolic_group,diabetes_duration_years,diabetes_medication,insulin_use,smoking_status,cgm_device_type,cgm_own_device,apple_watch,first_name,surname,blood_type,last_meal_time,last_meal_description,operator_notes
+patient_label,registered_at_utc,age,sex,height_cm,weight_kg,bmi,metabolic_group,diabetes_duration_years,diabetes_medication,insulin_use,smoking_status,cgm_device_type,cgm_own_device,apple_watch,first_name,surname,blood_type,last_meal_time,last_meal_description,operator_notes,deleted_at
 GY_01,2026-03-26T15:42:23.532500+00:00,23,male,180,100.0,30.9,normoglycemic,,,,former,medtronic,True,False,,,,,,
 GY_02,2026-03-26T15:44:07.563793+00:00,50,male,150,150.0,66.7,T2DM,3,,injections,never,libre,True,False,,,,,,
 T1_01,2026-03-26T15:54:33.350865+00:00,50,male,180,125.0,38.6,T1DM,1,,injections,current,libre,False,True,Matan,Orr,B+,,toast + coffee,handsome
@@ -10,3 +10,12 @@ T1_05,2026-03-30T11:05:08.764327+00:00,45,male,180,80.0,24.7,T1DM,3,,injections,
 NG_02,2026-03-31T11:08:31.315157+00:00,37,male,185,85.0,24.8,normoglycemic,,,,never,libre,True,True,Gideon,,,,,
 T1_06,2026-04-01T08:24:03.074316+00:00,25,male,180,80.0,24.7,T1DM,5,Humalog,pump,former,libre,True,True,,,,,,
 T1_07,2026-04-01T09:41:30.864477+00:00,28,male,180,70.0,21.6,T1DM,4,Humalog,pump,current,dexcom,True,True,Nadav,Stern,AB+,2026-04-01T12:33,crossiant,
+NG_03,2026-04-19T10:16:54.274030+00:00,30,male,175,75.0,24.5,normoglycemic,,,,never,libre,False,False,,,,,,
+NG_04,2026-04-19T10:19:00.727891+00:00,30,female,165,60.0,22.0,normoglycemic,,,,never,libre,False,False,,,,,,
+T1_08,2026-04-19T10:19:19.729231+00:00,32,female,168,62.0,22.0,T1DM,5,,pump,never,dexcom,True,True,,,,,,
+NG_05,2026-04-19T10:19:46.583657+00:00,40,female,170,65.0,22.5,normoglycemic,,,,never,libre,False,False,,,,,,
+T2_01,2026-04-19T10:23:01.204549+00:00,29,female,172,64.0,21.6,T2DM,3,metformin,none,never,libre,False,True,,,,,,GCS integration smoke test
+NG_06,2026-04-19T11:07:39.499014+00:00,61,male,177,83.0,26.5,normoglycemic,,,,never,libre,False,True,Morris,Laster,B+,,,Copy from NG_03
+T2_02,2026-04-19T19:16:06.901744+00:00,45,male,180,85.0,26.2,T2DM,4,,injections,former,dexcom,False,True,,,,,,OCC retry smoke test
+NG_07,2026-04-19T19:25:47.566059+00:00,55,male,175,80.0,26.1,normoglycemic,,,,never,libre,False,False,,,,,,strict-mode happy path
+T2_03,2026-04-23T10:41:09.065415+00:00,65,male,172,73.0,24.7,T2DM,10,Glucomin Pills,none,never,libre,False,True,Robbie ,Citron,A+,2026-04-23T20:30,"Branflakes, Cereals","Uses Glucomin Pills, T2. Age 68, change that manually. ",

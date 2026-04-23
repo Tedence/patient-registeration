@@ -77,6 +77,7 @@ def register_patient(record: PatientRecord, path: Path | None = None) -> None:
 
 
 def _row_to_record(row: dict) -> PatientRecord:
+    row = {k: v for k, v in row.items() if isinstance(k, str)}
     optional_str = (
         "diabetes_duration_years", "diabetes_medication", "insulin_use",
         "first_name", "surname", "blood_type", "last_meal_time",

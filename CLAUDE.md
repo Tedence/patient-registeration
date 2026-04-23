@@ -43,7 +43,7 @@ cd frontend && npm run lint
 
 - Label format: `{prefix}_{nn}` where prefix is NG/T1/T2 per metabolic group, nn is zero-padded sequence number
 - BMI auto-calculated server-side; soft warning if <15 or >50
-- Validation bounds: age 18-65, height 100-220cm, weight 30-300kg
+- Validation bounds: age 3-120, height 100-220cm, weight 30-300kg
 - CORS allows localhost:3000 and localhost:5173
 
 ## Test Pattern

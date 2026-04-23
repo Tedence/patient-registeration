@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class PatientRegistrationRequest(BaseModel):
-    age: int = Field(ge=18, le=65)
+    age: int = Field(ge=3, le=120)
     sex: Literal["male", "female"]
     height_cm: int = Field(ge=100, le=220)
     weight_kg: float = Field(ge=30, le=300)
@@ -89,7 +89,7 @@ class PatientUpdateRequest(BaseModel):
     """
     patient_label: str | None = None
     registered_at_utc: datetime | None = None
-    age: int | None = Field(default=None, ge=18, le=65)
+    age: int | None = Field(default=None, ge=3, le=120)
     sex: Literal["male", "female"] | None = None
     height_cm: int | None = Field(default=None, ge=100, le=220)
     weight_kg: float | None = Field(default=None, ge=30, le=300)
