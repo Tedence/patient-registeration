@@ -112,3 +112,63 @@ class PatientUpdateRequest(BaseModel):
 class PatientRegistrationResponse(BaseModel):
     patient_label: str
     warnings: list[str] = []
+
+
+class SessionEvent(BaseModel):
+    """One row of a session CSV.
+
+    Two shapes share the table:
+      - `kind="note"` → `intervention_type`, `phase`, `intervention_id` all null
+      - `kind="intervention"` → all three are required. start/stop rows pair
+        via shared `intervention_id`; concurrent interventions are allowed
+        (each pair has its own id).
+    """
+    ts_utc: datetime
+    kind: Literal["note", "intervention"]
+    intervention_type: Literal["food", "ensure", "insulin"] | None = None
+    phase: Literal["start", "stop"] | None = None
+    intervention_id: str | None = None
+    text: str = ""
+    operator: str
+
+    @model_validator(mode="after")
+    def validate_shape(self):
+        intervention_fields = (self.intervention_type, self.phase, self.intervention_id)
+        if self.kind == "intervention":
+            if any(v is None for v in intervention_fields):
+                raise ValueError(
+                    "intervention events require intervention_type, phase, and intervention_id"
+                )
+        else:
+            if any(v is not None for v in intervention_fields):
+                raise ValueError("note events must not carry intervention fields")
+        return self
+
+
+class SessionPayload(BaseModel):
+    """Full session upload body. Serialized to one CSV at
+    `gs://{bucket}/{patient_label}/{session_date}/session_{start_ts}.csv`.
+    """
+    patient_label: str
+    operator: str
+    cgm_device: Literal["libre", "medtronic", "dexcom", "other"]
+    started_at_utc: datetime
+    ended_at_utc: datetime
+    events: list[SessionEvent] = []
+
+    @model_validator(mode="after")
+    def validate_times(self):
+        if self.ended_at_utc < self.started_at_utc:
+            raise ValueError("ended_at_utc must be >= started_at_utc")
+        return self
+
+
+class SessionSummary(BaseModel):
+    """Lightweight list entry — parsed from the `#` metadata line only."""
+    blob_path: str
+    patient_label: str
+    operator: str
+    cgm_device: str
+    started_at_utc: datetime
+    ended_at_utc: datetime
+    event_count: int

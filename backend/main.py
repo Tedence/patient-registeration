@@ -28,10 +28,13 @@ from models import (
     PatientRegistrationRequest,
     PatientRegistrationResponse,
     PatientUpdateRequest,
+    SessionPayload,
+    SessionSummary,
 )
 import audit
 import csv_store
 import gcs_client
+import session_store
 from auth import AdminContext, require_admin
 
 logging.basicConfig(
@@ -489,3 +492,171 @@ def add_patient_manual(
     )
     _post_mutation_mirror(record, warnings)
     return AdminMutationResponse(patient_label=record.patient_label, warnings=warnings)
+
+
+# ---------------------------------------------------------------------------
+# Session Recording (DEV-31)
+#
+# One CSV per session at gs://{bucket}/{patient_label}/{session_date}/session_{ts}.csv.
+# Backend keeps no local copy — GCS is canonical. Drafts live in the browser's
+# localStorage; only finalized sessions hit these endpoints.
+# ---------------------------------------------------------------------------
+
+
+def _audit_session(user: str, action: str, label: str, diff: dict) -> None:
+    """Append a session audit entry + best-effort GCS mirror."""
+    audit.append_entry(user=user, action=action, label=label, diff=diff)
+    try:
+        audit.mirror_to_gcs()
+    except Exception:
+        log.exception("Audit mirror failed (non-fatal)")
+
+
+@app.post("/api/sessions")
+def create_session(payload: SessionPayload):
+    """Upload a finalized session CSV. Any operator; no admin token.
+
+    Validates the patient exists, serializes the payload into the agreed CSV
+    shape, and uploads to GCS. GCS failure → 503 (client retains the draft
+    and can retry). Audit entry + mirror are best-effort post-success.
+    """
+    if not csv_store.read_one(payload.patient_label):
+        raise HTTPException(
+            status_code=404, detail=f"Patient {payload.patient_label} not found"
+        )
+
+    blob_path = session_store.session_blob_path(
+        payload.patient_label, payload.started_at_utc
+    )
+    csv_content = session_store.format_session_csv(payload)
+    try:
+        gcs_client.upload_session_csv(blob_path, csv_content)
+    except Exception as e:
+        log.exception("Session upload failed for %s", blob_path)
+        raise HTTPException(
+            status_code=503, detail=gcs_client.friendly_error(e)
+        ) from e
+
+    _audit_session(
+        user=payload.operator,
+        action="session_create",
+        label=payload.patient_label,
+        diff={
+            "blob_path": [None, blob_path],
+            "event_count": [0, len(payload.events)],
+        },
+    )
+    return {"blob_path": blob_path, "event_count": len(payload.events)}
+
+
+@app.get("/api/sessions")
+def list_sessions(patient_label: str = Query(...)):
+    """List sessions for one patient. Returns summary metadata per session.
+
+    Summaries are parsed from each CSV's `#` metadata line, so the payload is
+    small even if a patient has many sessions. Sessions that fail to parse are
+    skipped (logged) rather than breaking the whole list.
+    """
+    blob_paths = gcs_client.list_sessions_for_patient(patient_label)
+    summaries: list[SessionSummary] = []
+    for path in blob_paths:
+        raw = gcs_client.download_session_csv(path)
+        if raw is None:
+            continue
+        try:
+            summaries.append(session_store.parse_session_summary(path, raw))
+        except Exception:
+            log.exception("Skipping corrupt session CSV: %s", path)
+    summaries.sort(key=lambda s: s.started_at_utc)
+    return {"patient_label": patient_label, "sessions": [s.model_dump(mode="json") for s in summaries]}
+
+
+@app.get("/api/sessions/{patient_label}/{date}/{filename}")
+def get_session(patient_label: str, date: str, filename: str):
+    """Fetch a parsed session. Returns metadata + full event list."""
+    blob_path = f"{patient_label}/{date}/{filename}"
+    raw = gcs_client.download_session_csv(blob_path)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        parsed = session_store.parse_session_csv(raw)
+    except Exception as e:
+        log.exception("Failed to parse session CSV %s", blob_path)
+        raise HTTPException(
+            status_code=500, detail=f"Corrupt session CSV: {e}"
+        ) from e
+    return {"blob_path": blob_path, **parsed}
+
+
+@app.patch("/api/sessions/{patient_label}/{date}/{filename}")
+def update_session(
+    patient_label: str,
+    date: str,
+    filename: str,
+    payload: SessionPayload,
+    admin: AdminContext = Depends(require_admin),
+):
+    """Admin-only full rewrite of a session CSV."""
+    blob_path = f"{patient_label}/{date}/{filename}"
+    if payload.patient_label != patient_label:
+        raise HTTPException(
+            status_code=422,
+            detail="patient_label in body must match the URL path.",
+        )
+
+    before_raw = gcs_client.download_session_csv(blob_path)
+    if before_raw is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    try:
+        before_summary = session_store.parse_session_summary(blob_path, before_raw)
+    except Exception:
+        before_summary = None
+
+    csv_content = session_store.format_session_csv(payload)
+    try:
+        gcs_client.upload_session_csv(blob_path, csv_content)
+    except Exception as e:
+        log.exception("Session update upload failed for %s", blob_path)
+        raise HTTPException(
+            status_code=503, detail=gcs_client.friendly_error(e)
+        ) from e
+
+    _audit_session(
+        user=admin.user,
+        action="session_update",
+        label=patient_label,
+        diff={
+            "blob_path": blob_path,
+            "event_count": [
+                before_summary.event_count if before_summary else None,
+                len(payload.events),
+            ],
+        },
+    )
+    return {"blob_path": blob_path, "event_count": len(payload.events)}
+
+
+@app.delete("/api/sessions/{patient_label}/{date}/{filename}")
+def delete_session(
+    patient_label: str,
+    date: str,
+    filename: str,
+    admin: AdminContext = Depends(require_admin),
+):
+    """Admin-only hard delete of a session blob."""
+    blob_path = f"{patient_label}/{date}/{filename}"
+    try:
+        gcs_client.delete_session_csv(blob_path)
+    except Exception as e:
+        log.exception("Session delete failed for %s", blob_path)
+        raise HTTPException(
+            status_code=503, detail=gcs_client.friendly_error(e)
+        ) from e
+
+    _audit_session(
+        user=admin.user,
+        action="session_delete",
+        label=patient_label,
+        diff={"blob_path": [blob_path, None]},
+    )
+    return {"blob_path": blob_path}

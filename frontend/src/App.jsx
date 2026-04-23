@@ -2,6 +2,7 @@ import { useState } from "react";
 import RegistrationForm from "./RegistrationForm";
 import PatientList from "./PatientList";
 import EditTable from "./EditTable";
+import SessionsView from "./SessionsView";
 import tedenceLogo from "./assets/tedence_logo.png";
 
 const API = "http://localhost:8000";
@@ -29,6 +30,12 @@ function App() {
           Patient List
         </button>
         <button
+          className={view === "sessions" ? "active" : ""}
+          onClick={() => setView("sessions")}
+        >
+          Sessions
+        </button>
+        <button
           className={view === "edit" ? "active" : ""}
           onClick={() => setView("edit")}
         >
@@ -38,6 +45,7 @@ function App() {
       <div className="container">
         {view === "register" && <RegistrationForm api={API} />}
         {view === "list" && <PatientList api={API} />}
+        {view === "sessions" && <SessionsView api={API} />}
         {view === "edit" && <EditTable api={API} />}
       </div>
     </>
