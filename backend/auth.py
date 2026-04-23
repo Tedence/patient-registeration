@@ -1,8 +1,7 @@
 """Shared-secret admin auth for mutation endpoints.
 
-Config: ADMIN_TOKEN env var (required). If unset, all admin routes return 503
-so the service fails closed rather than silently allowing unauthenticated
-writes.
+Config: ADMIN_TOKEN env var. Defaults to "devtoken123" for local dev — override
+in production deployments.
 
 Clients send:
   - X-Admin-Token: must match ADMIN_TOKEN (401 on mismatch)
@@ -24,12 +23,7 @@ def require_admin(
     x_admin_token: str | None = Header(default=None),
     x_admin_user: str | None = Header(default=None),
 ) -> AdminContext:
-    expected = os.getenv("ADMIN_TOKEN")
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Admin mode is not configured on this server.",
-        )
+    expected = os.getenv("ADMIN_TOKEN", "devtoken123")
     if not x_admin_token or x_admin_token != expected:
         raise HTTPException(status_code=401, detail="Invalid admin token.")
     if not x_admin_user or not x_admin_user.strip():

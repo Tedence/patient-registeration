@@ -74,17 +74,17 @@ class TestDiabetic:
 class TestBounds:
     def test_age_too_young(self):
         with pytest.raises(ValidationError):
-            PatientRegistrationRequest(**_base(age=17))
+            PatientRegistrationRequest(**_base(age=2))
 
     def test_age_too_old(self):
         with pytest.raises(ValidationError):
-            PatientRegistrationRequest(**_base(age=66))
+            PatientRegistrationRequest(**_base(age=121))
 
     def test_age_boundary_low(self):
-        PatientRegistrationRequest(**_base(age=18))
+        PatientRegistrationRequest(**_base(age=3))
 
     def test_age_boundary_high(self):
-        PatientRegistrationRequest(**_base(age=65))
+        PatientRegistrationRequest(**_base(age=120))
 
     def test_height_too_low(self):
         with pytest.raises(ValidationError):

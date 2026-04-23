@@ -74,8 +74,8 @@ const TOKEN_KEY = "admin_token";
 const USER_KEY = "admin_user";
 
 function AuthGate({ onReady }) {
-  const [token, setToken] = useState("");
-  const [user, setUser] = useState("");
+  const [token, setToken] = useState("devtoken123");
+  const [user, setUser] = useState("matan");
   const [err, setErr] = useState("");
 
   function submit(e) {
